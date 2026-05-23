@@ -1,0 +1,271 @@
+{
+  "id": "macroSentinel123",
+  "name": "Macro Market Sentinel",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "macro-sentinel",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        150
+      ],
+      "id": "webhook-macro-trigger-id",
+      "name": "Webhook Macro Trigger"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "time": "09:00"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        350
+      ],
+      "id": "cron-macro-trigger-id",
+      "name": "Daily 9AM Cron Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  { json: { ticker: 'GC=F', name: 'Gold' } },\n  { json: { ticker: 'SI=F', name: 'Silver' } },\n  { json: { ticker: 'BTC-USD', name: 'Bitcoin' } },\n  { json: { ticker: '%5ETNX', name: 'US 10-Year Yield' } },\n  { json: { ticker: '%5EGSPC', name: 'S&P 500' } }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        250
+      ],
+      "id": "list-tickers-id",
+      "name": "List Tickers"
+    },
+    {
+      "parameters": {
+        "url": "=https://query1.finance.yahoo.com/v8/finance/chart/{{ $json.ticker }}?interval=1d&range=2d",
+        "responseFormat": "string",
+        "options": {
+          "redirect": {
+            "redirect": {
+              "followRedirects": true
+            }
+          }
+        },
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "curl/7.68.0"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        250
+      ],
+      "id": "fetch-yahoo-finance-id",
+      "name": "Fetch Yahoo Finance"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst data = {};\n\nfor (const item of items) {\n  try {\n    const res = JSON.parse(item.json.data);\n    const result = res.chart.result[0];\n    const ticker = result.meta.symbol;\n    const prices = result.indicators.quote[0].close.filter(p => p !== null);\n    \n    const current = result.meta.regularMarketPrice || prices[prices.length - 1];\n    const previous = prices[prices.length - 2] || current;\n    const changePercent = ((current - previous) / previous) * 100;\n    \n    data[ticker] = {\n      price: current.toFixed(2),\n      change: changePercent.toFixed(2)\n    };\n  } catch (e) {\n    // Ignore errors for individual tickers\n  }\n}\n\n// Calculate Gold/Silver ratio\nlet goldSilverRatio = 'N/A';\nif (data['GC=F'] && data['SI=F']) {\n  goldSilverRatio = (parseFloat(data['GC=F'].price) / parseFloat(data['SI=F'].price)).toFixed(2);\n}\n\n// Validation: halt if S&P 500 price missing\nif (data['^GSPC']?.price === 'N/A') {\n  throw new Error('S&P 500 data unavailable');\n}\n\nreturn {\n  json: {\n    gold_price: data['GC=F'] ? data['GC=F'].price : 'N/A',\n    gold_change: data['GC=F'] ? data['GC=F'].change : '0.00',\n    silver_price: data['SI=F'] ? data['SI=F'].price : 'N/A',\n    silver_change: data['SI=F'] ? data['SI=F'].change : '0.00',\n    gold_silver_ratio: goldSilverRatio,\n    btc_price: data['BTC-USD'] ? data['BTC-USD'].price : 'N/A',\n    btc_change: data['BTC-USD'] ? data['BTC-USD'].change : '0.00',\n    bond_yield: data['^TNX'] ? data['^TNX'].price : 'N/A',\n    bond_change: data['^TNX'] ? data['^TNX'].change : '0.00',\n    sp500_price: data['^GSPC'] ? data['^GSPC'].price : 'N/A',\n    sp500_change: data['^GSPC'] ? data['^GSPC'].change : '0.00',\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        250
+      ],
+      "id": "aggregate-finance-data-id",
+      "name": "Aggregate Finance Data"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"deepseek-r1:7b\",\n  \"prompt\": \"Analyze the following global macro-finance data and provide a hedge-fund style market commentary.\\n\\nData Points:\\n- S&P 500 Index: ${{ $json.sp500_price }} ({{ $json.sp500_change }}%)\\n- US 10-Year Treasury Yield: {{ $json.bond_yield }}% ({{ $json.bond_change }}%)\\n- Bitcoin (BTC): ${{ $json.btc_price }} ({{ $json.btc_change }}%)\\n- Gold Spot: ${{ $json.gold_price }} ({{ $json.gold_change }}%)\\n- Silver Spot: ${{ $json.silver_price }} ({{ $json.silver_change }}%)\\n- Gold/Silver Ratio: {{ $json.gold_silver_ratio }}\\n\\nProvide a professional, sophisticated, and concise analysis detailing:\\n1. The S&P 500 moves and wider US market sentiments.\\n2. The US 10-Year yield move and what it indicates for Fed interest rate directions and FOMC outcomes.\\n3. Precious metals dynamics (Gold vs Silver, and the significance of the Gold/Silver ratio moves).\\n4. Crypto/BTC developments and wider risk-on/risk-off dynamics.\\n5. A concluding Hedge-Fund Style Macro Summary.\",\n  \"stream\": false\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1080,
+        250
+      ],
+      "id": "deepseek-analysis-id",
+      "name": "DeepSeek Market Analysis"
+    },
+    {
+      "parameters": {
+        "jsCode": "let response = $input.first().json.response || '';\n\n// 1. Strip out DeepSeek <think> reasoning blocks\nresponse = response.replace(/<think>[\\s\\S]*?<\\/think>/gi, '').trim();\n\n// 2. Implement safety cutoff for raw text to prevent HTML tag clipping\nif (response.length > 3800) {\n  response = response.substring(0, 3800) + '\\n\\n... (Report truncated due to size limits)';\n}\n\n// 3. Escape HTML and format Markdown bold\nconst cleanResponse = response\n  .replace(/&/g, '&amp;')\n  .replace(/</g, '&lt;')\n  .replace(/>/g, '&gt;')\n  .replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>')\n  .replace(/^### (.*?)$/gm, '<strong>$1</strong>');\n\nreturn {\n  json: {\n    telegramText: `📊 <strong>DAILY MACRO MARKET SENTINEL REPORT</strong>\\n\\n${cleanResponse}`\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        250
+      ],
+      "id": "format-sentinel-report-id",
+      "name": "Format Sentinel Report"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot8922391518:AAFBOA09xMc5w6QORRdVmQKF8ZfUdLrY6mc/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  \"chat_id\": \"1470009510\",\n  \"text\": $json.telegramText,\n  \"parse_mode\": \"HTML\"\n}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1500,
+        250
+      ],
+      "id": "telegram-macro-sender-id",
+      "name": "Send Report to Telegram"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        550
+      ],
+      "id": "yahoo-fetch-error-id",
+      "name": "Yahoo Fetch Error"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot8922391518:AAFBOA09xMc5w6QORRdVmQKF8ZfUdLrY6mc/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  \"chat_id\": \"1470009510\",\n  \"text\": \"⚠️ Sentinel Error: Yahoo Finance API data fetch failed.\",\n  \"parse_mode\": \"HTML\"\n}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        550
+      ],
+      "id": "telegram-error-alert-id",
+      "name": "Telegram Error Alert"
+    }
+  ],
+  "connections": {
+    "Webhook Macro Trigger": {
+      "main": [
+        [
+          {
+            "node": "List Tickers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 9AM Cron Trigger": {
+      "main": [
+        [
+          {
+            "node": "List Tickers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Tickers": {
+      "main": [
+        [
+          {
+            "node": "Fetch Yahoo Finance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Yahoo Finance": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Finance Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Finance Data": {
+      "main": [
+        [
+          {
+            "node": "DeepSeek Market Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Market Analysis": {
+      "main": [
+        [
+          {
+            "node": "Format Sentinel Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Sentinel Report": {
+      "main": [
+        [
+          {
+            "node": "Send Report to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Yahoo Fetch Error": {
+      "main": [
+        [
+          {
+            "node": "Telegram Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
